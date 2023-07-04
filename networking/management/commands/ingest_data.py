@@ -1,3 +1,4 @@
+import logging
 import os
 
 import requests
@@ -8,9 +9,11 @@ from django.core.management.base import BaseCommand, CommandError
 from networking.models import Operator, Site
 from networking.utils import lamber93_to_gps
 
+logger = logging.getLogger(__name__)
+
 
 class Command(BaseCommand):
-	help = "Ingest site dat from CSV file"
+	help = "Ingest Site and Operator data"
 
 	def add_arguments(self, parser):
 		parser.add_argument(
@@ -25,15 +28,24 @@ class Command(BaseCommand):
 		if not os.path.exists(csv_file):
 			raise CommandError(f"File {csv_file} does not exist")
 
-		self.ingest_operators()
-		self.ingest_csv(csv_file)
+		try:
+			self.ingest_operators()
+			self.ingest_sites(csv_file)
+		except Exception as err:
+			self.stdout.write(self.style.ERROR(f"{err}"))
 
 	def ingest_operators(self):
+		"""Ingest operators."""
 		url = 'https://fr.wikipedia.org/wiki/Mobile_Network_Code'
-		data = requests.get(url)
+		try:
+			data = requests.get(url)
+		except requests.exceptions.RequestException as err:
+			raise CommandError(err)
+
 		soup = BeautifulSoup(data.text, 'html.parser')
 		table = soup.find('table', attrs={'class': 'wikitable'})
 		rows = table.findAll('tr')
+
 		operators = []
 		# Ignore the header line
 		for row in rows[1:]:
@@ -50,21 +62,24 @@ class Command(BaseCommand):
 		# Persist data
 		objs = Operator.objects.bulk_create(operators)
 
-	def ingest_csv(self, csv_file):
+	def ingest_sites(self, csv_file):
+		"""Ingest sites.
+
+		:param		csv_file:		CSV file containing the sites
+		:type		csv_file:		str
+		"""
+
 		operators = {item[0]: item[1] for item in Operator.objects.values_list('code', 'pk')}
-		print(operators)
 		with open(csv_file) as f:
 			# Ignore the header line
 			lines = f.readlines()[1:]
-			num_lines = len(lines) 
-			for idx, line in enumerate(lines):
+			for line in lines:
 				data = line.strip().split(';')
 				try:
 					gps_x, gps_y = lamber93_to_gps(data[1], data[2])
-					print(data[1], data[2])
-					print(gps_x, gps_y)
+					logger.info(f"{data[1]}, {data[2]} --> {gps_x}, {gps_y}")
 				except TypeError as err:
-					print(idx, data)
+					logger.error(f"Cannot convert point: {data[1]}, {data[2]}")
 					continue
 		
 				try:
@@ -77,5 +92,5 @@ class Command(BaseCommand):
 						mt_4g=data[5],
 					)
 				except Exception as err:
-					print(idx, data)
+					logger.error(f"Cannot ingest point: {gps_x}, {gps_y}")
 					continue
